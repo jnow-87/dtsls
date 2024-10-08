@@ -8,10 +8,12 @@
 
 
 #include <stdio.h>
+#include <ctype.h>
 #include <json-c/json.h>
 #include <lsp/cmds.hash.h>
 #include <log.h>
 #include <lsp.h>
+#include <utils.h>
 
 
 /* macros */
@@ -19,7 +21,7 @@
 
 
 /* local/static prototypes */
-static size_t read_header();
+static int read_header(size_t *len);
 static lsp_dict_t *read_content();
 static void send_response(lsp_dict_t *result, int id);
 
@@ -36,11 +38,8 @@ int lsp_cmd_process(){
 
 	content = read_content();
 
-	if(content == NULL){
-		ERROR("parsing lsp json packet");
-
-		return 0;
-	}
+	if(content == NULL)
+		return -ERROR("parsing lsp json packet");
 
 	method = lsp_dict_get_string(content, "method");
 	params = lsp_dict_get_dict(content, "params");
@@ -54,8 +53,7 @@ int lsp_cmd_process(){
 		if(id >= 0)
 			send_response(result, id);
 
-		// TODO fix supposed double free
-//		lsp_dict_free(result);
+		lsp_dict_free(result);
 	}
 
 	lsp_dict_free(content);
@@ -200,41 +198,50 @@ int lsp_list_add(lsp_list_t *lst, lsp_dict_t *dict){
 
 
 /* local functions */
-static size_t read_header(){
-	char s[64];
+static int read_header(size_t *len){
+	char c;
+	int r;
 
 
-	// TODO handle error cases and skip over to next header
-	// 		return 0 if nothing left
-	if(fread(s, 1, 16, stdin) == 0)
-		return 0;
+	/* match header start */
+	r = strmatch("Content-Length: ", stdin);
 
-	if(strncmp(s, "Content-Length: ", 16) != 0)
-		return 0;
+	if(r != 0)
+		return r;
 
-	for(size_t i=0; i<sizeof(s); i++){
-		fread(s + i, 1, 1, stdin);
+	/* read length */
+	*len = 0;
 
-		if(s[i] == '\r'){
-			fread(s + i, 1, 3, stdin);
+	while(1){
+		if(fread(&c, 1, 1, stdin) != 1)
+			return -1;
 
-			return atoi(s);
-		}
+		if(c == '\r')
+			break;
+
+		if(!isdigit(c))
+			return 1;
+
+		*len = *len * 10 + c - '0';
 	}
 
-	return 0;
+	/* match header end */
+	return strmatch("\n\r\n", stdin);
 }
 
 static lsp_dict_t *read_content(){
 	static char *content = NULL;
 	static size_t csize = 0;
-	size_t len = 0;
+	int r = 1;
+	size_t len;
 
 
-	len = read_header();
+	while(r > 0){
+		r = read_header(&len);
 
-	if(len == 0)
-		goto err;
+		if(r < 0)
+			goto err;
+	}
 
 	if(len + 1 > csize){
 		free(content);
@@ -259,6 +266,7 @@ err:
 }
 
 static void send_response(lsp_dict_t *result, int id){
+	lsp_dict_t *cp = NULL;
 	char const *s;
 	lsp_dict_t *err;
 	lsp_dict_t *resp;
@@ -276,8 +284,10 @@ static void send_response(lsp_dict_t *result, int id){
 		lsp_dict_add_int(err, "code", -1);
 		lsp_dict_add_dict(resp, "error", err);
 	}
-	else
-		lsp_dict_add_dict(resp, "result", json_object_get(lsp_dict_get_dict(result, "result")));
+	else{
+		json_object_deep_copy(json_object_get(lsp_dict_get_dict(result, "result")), &cp, NULL);
+		lsp_dict_add_dict(resp, "result", cp);
+	}
 
 	s = json_object_to_json_string(resp);
 

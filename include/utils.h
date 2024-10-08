@@ -11,11 +11,13 @@
 #define UTILS_H
 
 
+#include <stdio.h>
 #include <sys/types.h>
 
 
 /* prototypes */
 char *stralloc(char const *s, size_t n);
+int strmatch(char const *s, FILE *fp);
 char *file_read(char const *path, size_t *size);
 int file_locate_identifier(char const *text, size_t line, size_t column, char *idfr, size_t idfr_max, bool trunc);
 
